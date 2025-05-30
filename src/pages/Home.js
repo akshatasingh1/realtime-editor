@@ -73,7 +73,7 @@ const Home=()=>{
             
         </div>
         <footer>
-            <h4>By <a href="https://github.com/akshatasingh1">Akshata Singh</a> and <a href="https://github.com/AnjeshSingh-NITT">Anjesh Singh</a></h4>
+            <h4>By <a href="https://github.com/akshatasingh1">Akshata Singh</a> </h4>
         </footer>
 
 
