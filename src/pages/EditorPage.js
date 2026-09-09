@@ -3,7 +3,7 @@ import toast from 'react-hot-toast';
 import ACTIONS from '../Actions';
 import Client from '../components/Client';
 import Editor from '../components/Editor';
-import axios from 'axios';
+import { runCode, fetchExecutions } from '../api/execution';
 import { initSocket } from '../socket';
 import {
     useLocation,
@@ -18,7 +18,12 @@ const EditorPage = () => {
     const location = useLocation();
     const { roomId } = useParams();
     const reactNavigator = useNavigate();
+
+    const [socket, setSocket] = useState(null);
     const [clients, setClients] = useState([]);
+    const [output, setOutput] = useState('');
+    const [isRunning, setIsRunning] = useState(false);
+    const [executions, setExecutions] = useState([]);
 
     const [languageId, setLanguageId] = useState(63); // Default: JavaScript (Node.js)
     const languages = [
@@ -26,39 +31,54 @@ const EditorPage = () => {
         { id: 62, name: 'Java (OpenJDK 13.0.1)' },
         { id: 63, name: 'JavaScript (Node.js 12.14.0)' },
         { id: 71, name: 'Python (3.8.1)' },
-    // Add more if needed
     ];
 
-
     useEffect(() => {
-        const init = async () => {
-            socketRef.current = await initSocket();
-            socketRef.current.on('connect_error', (err) => handleErrors(err));
-            socketRef.current.on('connect_failed', (err) => handleErrors(err));
+        // Guards against React 18 StrictMode double-invoking this effect.
+        // Because init() is async, the effect can be cleaned up before the
+        // socket finishes connecting; without this flag the first (orphaned)
+        // socket would still join the room, showing the user twice.
+        let cancelled = false;
 
-            function handleErrors(e) {
-                console.log('socket error', e);
-                toast.error('Socket connection failed, try again later.');
-                reactNavigator('/');
+        const handleErrors = (e) => {
+            console.log('socket error', e);
+            toast.error('Socket connection failed, try again later.');
+            reactNavigator('/');
+        };
+
+        const init = async () => {
+            const conn = await initSocket();
+
+            if (cancelled) {
+                // Effect was cleaned up while we were connecting - throw this
+                // socket away so it never joins the room.
+                conn.disconnect();
+                return;
             }
 
-            socketRef.current.emit(ACTIONS.JOIN, {
+            socketRef.current = conn;
+            setSocket(conn);
+
+            conn.on('connect_error', handleErrors);
+            conn.on('connect_failed', handleErrors);
+
+            conn.emit(ACTIONS.JOIN, {
                 roomId,
                 username: location.state?.username,
             });
 
-            socketRef.current.on(ACTIONS.JOINED, ({ clients, username, socketId }) => {
+            conn.on(ACTIONS.JOINED, ({ clients, username, socketId }) => {
                 if (username !== location.state?.username) {
                     toast.success(`${username} joined the room.`);
                 }
                 setClients(clients);
-                socketRef.current.emit(ACTIONS.SYNC_CODE, {
+                conn.emit(ACTIONS.SYNC_CODE, {
                     code: codeRef.current,
                     socketId,
                 });
             });
 
-            socketRef.current.on(ACTIONS.DISCONNECTED, ({ socketId, username }) => {
+            conn.on(ACTIONS.DISCONNECTED, ({ socketId, username }) => {
                 toast.success(`${username} left the room.`);
                 setClients((prev) =>
                     prev.filter((client) => client.socketId !== socketId)
@@ -68,15 +88,25 @@ const EditorPage = () => {
 
         init();
 
-        // Safe cleanup to avoid calling methods on null
         return () => {
-            if (socketRef.current) {
-                socketRef.current.disconnect();
-                socketRef.current.off(ACTIONS.JOINED);
-                socketRef.current.off(ACTIONS.DISCONNECTED);
+            cancelled = true;
+            const conn = socketRef.current;
+            if (conn) {
+                conn.off('connect_error', handleErrors);
+                conn.off('connect_failed', handleErrors);
+                conn.off(ACTIONS.JOINED);
+                conn.off(ACTIONS.DISCONNECTED);
+                conn.disconnect();
             }
+            socketRef.current = null;
+            setSocket(null);
         };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        fetchExecutions(roomId).then(setExecutions);
+    }, [roomId]);
 
     async function copyRoomId() {
         try {
@@ -88,46 +118,25 @@ const EditorPage = () => {
         }
     }
 
-    
+    const handleRunClick = async () => {
+        if (isRunning) return;
+        setIsRunning(true);
+        setOutput('Running...');
+        try {
+            const result = await runCode(languageId, codeRef.current, roomId);
+            if (result.stdout) setOutput(result.stdout);
+            else if (result.stderr) setOutput(result.stderr);
+            else if (result.compile_output) setOutput(result.compile_output);
+            else if (result.error) setOutput(result.error);
+            else setOutput('No output');
 
-const JUDGE0_API_URL = 'https://judge0-ce.p.rapidapi.com/submissions';
-const JUDGE0_API_HEADERS = {
-    'Content-Type': 'application/json',
-    'X-RapidAPI-Key': '348a4001c5msh9f2bad44424f12ap1a01f8jsnd65c423164eb',
-    'X-RapidAPI-Host': 'judge0-ce.p.rapidapi.com',
-};
-
-async function runCode(language_id, source_code, stdin = '') {
-    try {
-        const { data } = await axios.post(
-            JUDGE0_API_URL + '?base64_encoded=false&wait=true',
-            {
-                source_code,
-                language_id, // e.g., 63 for JavaScript (Node.js)
-                stdin,
-            },
-            { headers: JUDGE0_API_HEADERS }
-        );
-
-        return data; // Contains output, stderr, compile_output, etc.
-    } catch (err) {
-        console.error('Code execution failed:', err);
-        return { error: 'Code execution failed.' };
-    }
-}
-
-const [output, setOutput] = useState('');
-
-const handleRunClick = async () => {
-    const code = codeRef.current;
-    const result = await runCode(languageId, code);
-    if (result.stdout) setOutput(result.stdout);
-    else if (result.stderr) setOutput(result.stderr);
-    else if (result.compile_output) setOutput(result.compile_output);
-    else setOutput('No output');
-};
-
-
+            if (!result.error) {
+                fetchExecutions(roomId).then(setExecutions);
+            }
+        } finally {
+            setIsRunning(false);
+        }
+    };
 
     function leaveRoom() {
         reactNavigator('/');
@@ -160,36 +169,51 @@ const handleRunClick = async () => {
 
                     <div className="languageSelector">
                         <label htmlFor="language">Language:</label>
-                            <select
+                        <select
                             id="language"
                             value={languageId}
                             onChange={(e) => setLanguageId(Number(e.target.value))}
-                            >
+                        >
                             {languages.map((lang) => (
-                            <option key={lang.id} value={lang.id}>
-                            {lang.name}
-                            </option>
-                        ))}
-                            </select>
+                                <option key={lang.id} value={lang.id}>
+                                    {lang.name}
+                                </option>
+                            ))}
+                        </select>
                     </div>
                 </div>
 
-                
-
-                <button className="btn runBtn" onClick={handleRunClick}>
-                    Run Code
+                <button
+                    className="btn runBtn"
+                    onClick={handleRunClick}
+                    disabled={isRunning}
+                >
+                    {isRunning ? 'Running...' : 'Run Code'}
                 </button>
 
-                 <div className="outputWindow">
-                     <h3>Output:</h3>
+                <div className="outputWindow">
+                    <h3>Output:</h3>
                     <pre>{output}</pre>
-                     </div>
+                </div>
+
+                {executions.length > 0 && (
+                    <div className="historyWindow">
+                        <h3>Recent runs</h3>
+                        <ul>
+                            {executions.map((ex) => (
+                                <li key={ex.id}>
+                                    {new Date(ex.created_at).toLocaleTimeString()}
+                                    {' — '}
+                                    {ex.status || 'unknown'}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
 
                 <button className="btn copyBtn" onClick={copyRoomId}>
                     Copy ROOM ID
                 </button>
-
-                
 
                 <button className="btn leaveBtn" onClick={leaveRoom}>
                     Leave
@@ -197,7 +221,7 @@ const handleRunClick = async () => {
             </div>
             <div className="editorWrap">
                 <Editor
-                    socketRef={socketRef}
+                    socket={socket}
                     roomId={roomId}
                     onCodeChange={(code) => {
                         codeRef.current = code;
