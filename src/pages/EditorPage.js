@@ -28,6 +28,7 @@ const EditorPage = () => {
 
     const [socket, setSocket] = useState(null);
     const [clients, setClients] = useState([]);
+    const [stdin, setStdin] = useState('');
     const [output, setOutput] = useState('');
     const [isRunning, setIsRunning] = useState(false);
     const [executions, setExecutions] = useState([]);
@@ -166,7 +167,12 @@ const EditorPage = () => {
         setIsRunning(true);
         setOutput('Running...');
         try {
-            const result = await runCode(languageId, codeRef.current, roomId);
+            const result = await runCode(
+                languageId,
+                codeRef.current,
+                roomId,
+                stdin
+            );
             if (result.stdout) setOutput(result.stdout);
             else if (result.stderr) setOutput(result.stderr);
             else if (result.compile_output) setOutput(result.compile_output);
@@ -209,7 +215,19 @@ const EditorPage = () => {
                             />
                         ))}
                     </div>
+                </div>
 
+                <button className="btn copyBtn" onClick={copyRoomId}>
+                    Copy ROOM ID
+                </button>
+
+                <button className="btn leaveBtn" onClick={leaveRoom}>
+                    Leave
+                </button>
+            </div>
+
+            <div className="editorWrap">
+                <div className="editorToolbar">
                     <div className="languageSelector">
                         <label htmlFor="language">Language:</label>
                         <select
@@ -226,52 +244,60 @@ const EditorPage = () => {
                             ))}
                         </select>
                     </div>
+
+                    <button
+                        className="btn runBtn"
+                        onClick={handleRunClick}
+                        disabled={isRunning}
+                    >
+                        {isRunning ? 'Running...' : 'Run Code'}
+                    </button>
                 </div>
 
-                <button
-                    className="btn runBtn"
-                    onClick={handleRunClick}
-                    disabled={isRunning}
-                >
-                    {isRunning ? 'Running...' : 'Run Code'}
-                </button>
-
-                <div className="outputWindow">
-                    <h3>Output:</h3>
-                    <pre>{output}</pre>
+                <div className="editorMain">
+                    <Editor
+                        socket={socket}
+                        roomId={roomId}
+                        onCodeChange={(code) => {
+                            codeRef.current = code;
+                        }}
+                    />
                 </div>
 
-                {executions.length > 0 && (
-                    <div className="historyWindow">
-                        <h3>Recent runs</h3>
-                        <ul>
-                            {executions.map((ex) => (
-                                <li key={ex.id}>
-                                    {new Date(ex.created_at).toLocaleTimeString()}
-                                    {' — '}
-                                    {ex.status || 'unknown'}
-                                </li>
-                            ))}
-                        </ul>
+                <div className="outputPanel">
+                    <div className="stdinWindow">
+                        <h3>Input (stdin):</h3>
+                        <textarea
+                            className="stdinBox"
+                            value={stdin}
+                            onChange={(e) => setStdin(e.target.value)}
+                            placeholder="Values your program reads, one per line"
+                            spellCheck="false"
+                        />
                     </div>
-                )}
 
-                <button className="btn copyBtn" onClick={copyRoomId}>
-                    Copy ROOM ID
-                </button>
+                    <div className="outputWindow">
+                        <h3>Output:</h3>
+                        <pre>{output}</pre>
+                    </div>
 
-                <button className="btn leaveBtn" onClick={leaveRoom}>
-                    Leave
-                </button>
-            </div>
-            <div className="editorWrap">
-                <Editor
-                    socket={socket}
-                    roomId={roomId}
-                    onCodeChange={(code) => {
-                        codeRef.current = code;
-                    }}
-                />
+                    {executions.length > 0 && (
+                        <div className="historyWindow">
+                            <h3>Recent runs</h3>
+                            <ul>
+                                {executions.map((ex) => (
+                                    <li key={ex.id}>
+                                        {new Date(
+                                            ex.created_at
+                                        ).toLocaleTimeString()}
+                                        {' — '}
+                                        {ex.status || 'unknown'}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                </div>
             </div>
         </div>
     );
