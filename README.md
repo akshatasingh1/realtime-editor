@@ -90,6 +90,16 @@ npm start               # React dev server on :3000
 For a production-style run: `npm run build` then `npm run server.prod` (the
 server serves the build and the API from `:5000`).
 
+### Tests
+
+```bash
+npm run test:server     # server lane (Jest, node env) - 36 tests
+CI=true npm test         # client lane (CRA / RTL)
+```
+
+Nothing in the suite touches the network or a database. See
+[TESTING.md](TESTING.md) for what's covered and what's mocked.
+
 ---
 
 ## API
@@ -143,11 +153,15 @@ scaling would need the Socket.IO Redis adapter.
 ```
 server.js              bootstrap: express, socket.io, graceful shutdown
 server/
-  db.js                pg pool + room/execution queries (no-ops without DATABASE_URL)
-  schema.sql           applied on boot
-  judge0.js            Judge0 request wrapper
-  routes.js            REST endpoints
-  sockets.js           realtime handlers + debounced persistence
+  db.js / db.test.js         pg pool + room/execution queries (no-ops without DATABASE_URL)
+  schema.sql                 applied on boot
+  judge0.js / judge0.test.js Judge0 request wrapper
+  routes.js                  REST endpoints
+  sockets.js / sockets.test.js  realtime handlers + debounced persistence
+test/
+  routes.test.js             REST endpoints (supertest, db + judge0 mocked)
+  execute-rate-limit.test.js  per-IP limiter
+  sockets.integration.test.js real socket.io server + client
 src/
   Actions.js           shared socket event names
   socket.js            client socket factory
@@ -162,7 +176,7 @@ src/
 
 ## Known limitations / TODO
 
-- CRA is unmaintained; migrating to Vite would remove the audit noise and speed up builds
+- CRA is unmaintained; migrating to Vite would remove the audit noise, speed up builds, and unblock router-component tests (see [TESTING.md](TESTING.md))
 - Full-document sync (see design notes) rather than CRDT
 - No auth — anyone with a room ID has full access
 - Judge0 CE free tier is rate-limited; heavy use will see 429s
