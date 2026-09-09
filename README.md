@@ -7,6 +7,7 @@ programming, interviews, and teaching.
 - **Live editing** — every keystroke syncs to everyone in the room (CodeMirror + Socket.IO)
 - **Persistent rooms** — a room keeps its code and language between sessions (Neon Postgres)
 - **Code execution** — run C++, Java, JavaScript, or Python via Judge0, with a per-room run history
+- **Host controls** — the first person in is the host and can lock the room; after that, new joiners wait in a lobby until admitted
 - **Degrades gracefully** — runs without a database (persistence just switches off) and re-joins the room automatically after a network drop
 
 ---
@@ -93,7 +94,7 @@ server serves the build and the API from `:5000`).
 ### Tests
 
 ```bash
-npm run test:server     # server lane (Jest, node env) - 36 tests
+npm run test:server     # server lane (Jest, node env)
 CI=true npm test         # client lane (CRA / RTL)
 ```
 
@@ -104,18 +105,26 @@ Nothing in the suite touches the network or a database. See
 
 ## API
 
+All room-scoped endpoints require an `X-Room-Token` header (issued by the socket
+layer on join).
+
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/execute` | Run code via Judge0. Body: `{ language_id, source_code, stdin?, roomId? }`. Persists the run when `roomId` is given. Rate-limited per-IP and globally. |
-| `GET` | `/api/rooms/:id` | Room row (`content`, `language_id`, timestamps). |
-| `GET` | `/api/rooms/:id/executions` | Last 20 runs for the room, newest first. |
+| `POST` | `/api/execute` | Run code via Judge0. Body: `{ language_id, source_code, stdin?, roomId? }`. Persists the run when `roomId` is given (token required then). Rate-limited per-IP and globally. |
+| `GET` | `/api/rooms/:id` | Room row (`content`, `language_id`, timestamps). Token required. |
+| `GET` | `/api/rooms/:id/executions` | Last 20 runs for the room, newest first. Token required. |
 
 ### Socket events
 
-`join` → server replies `joined` (presence) to the room; new joiners also get
-`code-change` (restored document) and `language-change`. `code-change` /
-`language-change` from a client are relayed to the rest of the room. `sync-request`
-asks one existing peer for the live document, which it returns via `sync-code`.
+`join` → server replies `joined` (presence); a joiner also gets `room-access`
+(the REST token + lock state), `code-change`, and `language-change`, and the
+first person in also gets `host`. `code-change` / `language-change` from a
+client are relayed to the room. `sync-request` asks one existing peer for the
+live document, returned via `sync-code`.
+
+**Lock flow:** the host sends `lock-room` / `unlock-room`. Into a locked room, a
+joiner gets `waiting` and the host gets `knock` + `pending`; the host replies
+with `admit` (→ `admitted`) or `deny` (→ `denied`).
 
 ---
 
@@ -142,9 +151,22 @@ few seconds of edits.
 **No database is a supported mode.** With `DATABASE_URL` unset, all persistence
 calls no-op and rooms are purely in-memory + peer-synced. Handy for local dev.
 
-**Single instance only.** Presence (`userSocketMap`) lives in server memory, so
-running more than one server process would split the room state. Horizontal
-scaling would need the Socket.IO Redis adapter.
+**Room access is capability-based, with an optional lock.** The room ID is an
+unguessable UUID — possession of the link is the authorization, like a Meet
+link. On top of that, the first person in is the **host** and can **lock** the
+room; while locked, new joiners sit in a lobby until the host admits or denies
+them. A host token (in `sessionStorage`) keeps the host as host across a
+reload/reconnect; if the host leaves with people still in, the oldest is
+promoted. Lock state is in-memory and session-scoped — an empty room resets to
+unlocked. When you're in a room the server issues a short-lived **access token**;
+the REST endpoints (`/api/rooms/:id`, `/executions`, and room-scoped
+`/api/execute`) require it, so a leaked link doesn't expose a locked room's code
+or history over HTTP.
+
+**Single instance only.** Presence (`userSocketMap`), lock state, and access
+tokens all live in server memory, so running more than one server process would
+split the room state. Horizontal scaling would need the Socket.IO Redis adapter
+and a shared token store.
 
 ---
 
@@ -156,8 +178,9 @@ server/
   db.js / db.test.js         pg pool + room/execution queries (no-ops without DATABASE_URL)
   schema.sql                 applied on boot
   judge0.js / judge0.test.js Judge0 request wrapper
-  routes.js                  REST endpoints
-  sockets.js / sockets.test.js  realtime handlers + debounced persistence
+  roomAccess.js / .test.js   in-memory REST access tokens
+  routes.js                  REST endpoints (+ requireRoomAccess middleware)
+  sockets.js / sockets.test.js  realtime handlers, lock/admit flow, debounced persistence
 test/
   routes.test.js             REST endpoints (supertest, db + judge0 mocked)
   execute-rate-limit.test.js  per-IP limiter
@@ -178,5 +201,5 @@ src/
 
 - CRA is unmaintained; migrating to Vite would remove the audit noise, speed up builds, and unblock router-component tests (see [TESTING.md](TESTING.md))
 - Full-document sync (see design notes) rather than CRDT
-- No auth — anyone with a room ID has full access
+- No accounts — access is by unguessable link + an optional host lock (see design notes); there's no persistent identity or invite list
 - Judge0 CE free tier is rate-limited; heavy use will see 429s

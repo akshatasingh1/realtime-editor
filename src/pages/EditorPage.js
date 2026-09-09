@@ -26,6 +26,18 @@ const EditorPage = () => {
     const { roomId } = useParams();
     const reactNavigator = useNavigate();
 
+    // Host token survives a reload/reconnect so the host stays the host.
+    const hostKey = `codesync:host:${roomId}`;
+    const readHostToken = () => {
+        try {
+            return window.sessionStorage.getItem(hostKey);
+        } catch {
+            return null;
+        }
+    };
+    const hostTokenRef = useRef(readHostToken());
+    const accessTokenRef = useRef(null);
+
     const [socket, setSocket] = useState(null);
     const [clients, setClients] = useState([]);
     const [stdin, setStdin] = useState('');
@@ -33,6 +45,15 @@ const EditorPage = () => {
     const [isRunning, setIsRunning] = useState(false);
     const [executions, setExecutions] = useState([]);
     const [languageId, setLanguageId] = useState(63); // JavaScript (Node.js)
+
+    const [waiting, setWaiting] = useState(false);
+    const [isHost, setIsHost] = useState(false);
+    const [locked, setLocked] = useState(false);
+    const [pending, setPending] = useState([]);
+
+    const refreshExecutions = () => {
+        fetchExecutions(roomId, accessTokenRef.current).then(setExecutions);
+    };
 
     useEffect(() => {
         // Guards against React 18 StrictMode double-invoking this effect.
@@ -57,8 +78,6 @@ const EditorPage = () => {
             const conn = await initSocket();
 
             if (cancelled) {
-                // Effect was cleaned up while we were connecting - throw this
-                // socket away so it never joins the room.
                 conn.disconnect();
                 return;
             }
@@ -73,7 +92,11 @@ const EditorPage = () => {
             // dropped network blip re-joins the room instead of silently
             // leaving the user desynced until they refresh.
             const emitJoin = () => {
-                conn.emit(ACTIONS.JOIN, { roomId, username: myUsername });
+                conn.emit(ACTIONS.JOIN, {
+                    roomId,
+                    username: myUsername,
+                    hostToken: hostTokenRef.current || undefined,
+                });
             };
             conn.on('connect', () => {
                 if (hasConnected) toast.success('Reconnected.');
@@ -98,7 +121,6 @@ const EditorPage = () => {
                 setClients(clients);
             });
 
-            // A newer client asked us for the live document.
             conn.on(ACTIONS.SYNC_REQUEST, ({ socketId }) => {
                 conn.emit(ACTIONS.SYNC_CODE, {
                     socketId,
@@ -116,6 +138,47 @@ const EditorPage = () => {
                     prev.filter((client) => client.socketId !== socketId)
                 );
             });
+
+            // --- lockable room / admit flow ---
+
+            conn.on(ACTIONS.HOST, ({ hostToken }) => {
+                hostTokenRef.current = hostToken;
+                try {
+                    window.sessionStorage.setItem(hostKey, hostToken);
+                } catch {
+                    /* private mode - host status just won't survive reload */
+                }
+                setIsHost(true);
+            });
+
+            conn.on(ACTIONS.ROOM_ACCESS, ({ token, locked, isHost }) => {
+                accessTokenRef.current = token;
+                setLocked(locked);
+                setIsHost(isHost);
+                setWaiting(false);
+                refreshExecutions();
+            });
+
+            conn.on(ACTIONS.ROOM_LOCK_STATE, ({ locked }) => setLocked(locked));
+
+            conn.on(ACTIONS.WAITING, () => setWaiting(true));
+            conn.on(ACTIONS.ADMITTED, () => setWaiting(false));
+
+            conn.on(ACTIONS.DENIED, ({ reason }) => {
+                if (reason === 'host-left') {
+                    // The room reset; re-join and take it over.
+                    emitJoin();
+                    return;
+                }
+                toast.error('The host did not let you into the room.');
+                reactNavigator('/');
+            });
+
+            conn.on(ACTIONS.KNOCK, ({ username }) => {
+                toast(`${username} wants to join`, { icon: '🔔' });
+            });
+
+            conn.on(ACTIONS.PENDING, ({ pending }) => setPending(pending || []));
         };
 
         init();
@@ -132,6 +195,14 @@ const EditorPage = () => {
                 conn.off(ACTIONS.DISCONNECTED);
                 conn.off(ACTIONS.SYNC_REQUEST);
                 conn.off(ACTIONS.LANGUAGE_CHANGE);
+                conn.off(ACTIONS.HOST);
+                conn.off(ACTIONS.ROOM_ACCESS);
+                conn.off(ACTIONS.ROOM_LOCK_STATE);
+                conn.off(ACTIONS.WAITING);
+                conn.off(ACTIONS.ADMITTED);
+                conn.off(ACTIONS.DENIED);
+                conn.off(ACTIONS.KNOCK);
+                conn.off(ACTIONS.PENDING);
                 conn.disconnect();
             }
             socketRef.current = null;
@@ -139,10 +210,6 @@ const EditorPage = () => {
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
-
-    useEffect(() => {
-        fetchExecutions(roomId).then(setExecutions);
-    }, [roomId]);
 
     async function copyRoomId() {
         try {
@@ -162,6 +229,18 @@ const EditorPage = () => {
         });
     }
 
+    function toggleLock() {
+        socketRef.current?.emit(
+            locked ? ACTIONS.UNLOCK_ROOM : ACTIONS.LOCK_ROOM,
+            { roomId }
+        );
+    }
+
+    const admit = (socketId) =>
+        socketRef.current?.emit(ACTIONS.ADMIT, { roomId, socketId });
+    const deny = (socketId) =>
+        socketRef.current?.emit(ACTIONS.DENY, { roomId, socketId });
+
     const handleRunClick = async () => {
         if (isRunning) return;
         setIsRunning(true);
@@ -171,7 +250,8 @@ const EditorPage = () => {
                 languageId,
                 codeRef.current,
                 roomId,
-                stdin
+                stdin,
+                accessTokenRef.current
             );
             if (result.stdout) setOutput(result.stdout);
             else if (result.stderr) setOutput(result.stderr);
@@ -179,9 +259,7 @@ const EditorPage = () => {
             else if (result.error) setOutput(result.error);
             else setOutput('No output');
 
-            if (!result.error) {
-                fetchExecutions(roomId).then(setExecutions);
-            }
+            if (!result.error) refreshExecutions();
         } finally {
             setIsRunning(false);
         }
@@ -197,6 +275,23 @@ const EditorPage = () => {
 
     return (
         <div className="mainWrap">
+            {waiting && (
+                <div className="waitingOverlay">
+                    <div className="waitingCard">
+                        <img
+                            className="waitingLogo"
+                            src="/code-sync.png"
+                            alt="logo"
+                        />
+                        <h2>Waiting to be let in…</h2>
+                        <p>The room is locked. The host has to admit you.</p>
+                        <button className="btn leaveBtn" onClick={leaveRoom}>
+                            Cancel
+                        </button>
+                    </div>
+                </div>
+            )}
+
             <div className="aside">
                 <div className="asideInner">
                     <div className="logo">
@@ -206,7 +301,10 @@ const EditorPage = () => {
                             alt="logo"
                         />
                     </div>
-                    <h3>Connected</h3>
+
+                    <h3>
+                        Connected {locked && <span className="lockBadge">🔒 locked</span>}
+                    </h3>
                     <div className="clientsList">
                         {clients.map((client) => (
                             <Client
@@ -215,6 +313,47 @@ const EditorPage = () => {
                             />
                         ))}
                     </div>
+
+                    {isHost && (
+                        <div className="hostControls">
+                            <button
+                                className="btn lockBtn"
+                                onClick={toggleLock}
+                            >
+                                {locked ? 'Unlock room' : 'Lock room'}
+                            </button>
+
+                            {pending.length > 0 && (
+                                <div className="lobbyList">
+                                    <h4>Waiting to join</h4>
+                                    {pending.map((p) => (
+                                        <div
+                                            key={p.socketId}
+                                            className="lobbyItem"
+                                        >
+                                            <span>{p.username}</span>
+                                            <span className="lobbyActions">
+                                                <button
+                                                    onClick={() =>
+                                                        admit(p.socketId)
+                                                    }
+                                                >
+                                                    Admit
+                                                </button>
+                                                <button
+                                                    onClick={() =>
+                                                        deny(p.socketId)
+                                                    }
+                                                >
+                                                    Deny
+                                                </button>
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
 
                 <button className="btn copyBtn" onClick={copyRoomId}>

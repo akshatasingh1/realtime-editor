@@ -9,10 +9,10 @@ beforeEach(() => {
 afterEach(() => jest.clearAllMocks());
 
 describe('runCode', () => {
-    it('posts the run to /api/execute and returns the Judge0 result', async () => {
+    it('posts the run to /api/execute with the room token header', async () => {
         axios.post.mockResolvedValue({ data: { stdout: '42\n' } });
 
-        const result = await runCode(63, 'console.log(42)', 'room-1', '5');
+        const result = await runCode(63, 'console.log(42)', 'room-1', '5', 'tok');
 
         expect(result).toEqual({ stdout: '42\n' });
         expect(axios.post).toHaveBeenCalledWith(
@@ -22,7 +22,18 @@ describe('runCode', () => {
                 source_code: 'console.log(42)',
                 roomId: 'room-1',
                 stdin: '5',
-            }
+            },
+            { headers: { 'X-Room-Token': 'tok' } }
+        );
+    });
+
+    it('omits the token header when there is no token', async () => {
+        axios.post.mockResolvedValue({ data: {} });
+        await runCode(63, 'x', 'r');
+        expect(axios.post).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.any(Object),
+            { headers: {} }
         );
     });
 
@@ -46,12 +57,16 @@ describe('runCode', () => {
 });
 
 describe('fetchExecutions', () => {
-    it('returns the array from the API', async () => {
+    it('returns the array from the API and sends the room token', async () => {
         axios.get.mockResolvedValue({ data: [{ id: '1', status: 'Accepted' }] });
 
-        expect(await fetchExecutions('r1')).toEqual([
+        expect(await fetchExecutions('r1', 'tok')).toEqual([
             { id: '1', status: 'Accepted' },
         ]);
+        expect(axios.get).toHaveBeenCalledWith(
+            expect.stringContaining('/api/rooms/r1/executions'),
+            { headers: { 'X-Room-Token': 'tok' } }
+        );
     });
 
     it('returns [] on request failure', async () => {

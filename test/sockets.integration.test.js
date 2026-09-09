@@ -112,3 +112,64 @@ test('re-emitting JOIN (a reconnect) produces a fresh JOINED', async () => {
     expect(joinedCount).toBeGreaterThan(0);
     alice.disconnect();
 });
+
+test('lock -> knock -> admit lets a waiting user into the room', async () => {
+    const room = 'room-lock';
+
+    const host = connect();
+    await once(host, 'connect');
+    host.emit(ACTIONS.JOIN, { roomId: room, username: 'host' });
+    await once(host, ACTIONS.ROOM_ACCESS);
+
+    let knocked = null;
+    host.on(ACTIONS.KNOCK, (p) => { knocked = p; });
+    host.emit(ACTIONS.LOCK_ROOM, { roomId: room });
+    await wait(100);
+
+    const guest = connect();
+    let waited = false;
+    let admitted = false;
+    guest.on(ACTIONS.WAITING, () => { waited = true; });
+    guest.on(ACTIONS.ADMITTED, () => { admitted = true; });
+    await once(guest, 'connect');
+    guest.emit(ACTIONS.JOIN, { roomId: room, username: 'guest' });
+    await wait(200);
+
+    expect(waited).toBe(true);
+    expect(knocked).toMatchObject({ username: 'guest' });
+
+    host.emit(ACTIONS.ADMIT, { roomId: room, socketId: knocked.socketId });
+    await once(guest, ACTIONS.ROOM_ACCESS);
+
+    expect(admitted).toBe(true);
+
+    host.disconnect();
+    guest.disconnect();
+});
+
+test('a denied user is turned away', async () => {
+    const room = 'room-deny';
+
+    const host = connect();
+    await once(host, 'connect');
+    host.emit(ACTIONS.JOIN, { roomId: room, username: 'host' });
+    await once(host, ACTIONS.ROOM_ACCESS);
+    host.emit(ACTIONS.LOCK_ROOM, { roomId: room });
+    await wait(100);
+
+    const guest = connect();
+    let denied = null;
+    guest.on(ACTIONS.DENIED, (p) => { denied = p; });
+    guest.on(ACTIONS.KNOCK, () => {});
+    await once(guest, 'connect');
+    guest.emit(ACTIONS.JOIN, { roomId: room, username: 'guest' });
+    const knock = await once(host, ACTIONS.KNOCK);
+
+    host.emit(ACTIONS.DENY, { roomId: room, socketId: knock.socketId });
+    await wait(150);
+
+    expect(denied).toEqual({ reason: 'denied' });
+
+    host.disconnect();
+    guest.disconnect();
+});

@@ -11,12 +11,20 @@ jest.mock('../server/db', () => ({
     listExecutions: jest.fn(),
 }));
 jest.mock('../server/judge0', () => ({ execute: jest.fn() }));
+jest.mock('../server/roomAccess', () => ({
+    isValid: jest.fn(() => true),
+    issue: jest.fn(),
+    revoke: jest.fn(),
+}));
 
 const request = require('supertest');
 const express = require('express');
 const db = require('../server/db');
 const judge0 = require('../server/judge0');
+const roomAccess = require('../server/roomAccess');
 const routes = require('../server/routes');
+
+const TOKEN = { 'X-Room-Token': 'valid-token' };
 
 function makeApp() {
     const app = express();
@@ -29,6 +37,7 @@ function makeApp() {
 let app;
 beforeEach(() => {
     app = makeApp();
+    roomAccess.isValid.mockReturnValue(true);
     db.ensureRoom.mockResolvedValue({ id: 'r', language_id: 63 });
     db.recordExecution.mockResolvedValue(undefined);
     db.getRoom.mockResolvedValue(null);
@@ -52,6 +61,7 @@ describe('POST /api/execute', () => {
     test('runs code and records the execution when roomId is given', async () => {
         const res = await request(app)
             .post('/api/execute')
+            .set(TOKEN)
             .send({ language_id: 63, source_code: 'print(1)', roomId: 'room-1' })
             .expect(200);
 
@@ -69,11 +79,21 @@ describe('POST /api/execute', () => {
         );
     });
 
-    test('does not touch the DB when no roomId is given', async () => {
+    test('a room-scoped run without a valid token is rejected', async () => {
+        roomAccess.isValid.mockReturnValue(false);
+        await request(app)
+            .post('/api/execute')
+            .send({ language_id: 63, source_code: 'x', roomId: 'room-1' })
+            .expect(403);
+        expect(judge0.execute).not.toHaveBeenCalled();
+    });
+
+    test('an anonymous run needs no token and does not touch the DB', async () => {
         await request(app)
             .post('/api/execute')
             .send({ language_id: 63, source_code: 'x' })
             .expect(200);
+        expect(roomAccess.isValid).not.toHaveBeenCalled();
         expect(db.recordExecution).not.toHaveBeenCalled();
     });
 
@@ -94,27 +114,45 @@ describe('POST /api/execute', () => {
         jest.spyOn(console, 'error').mockImplementation(() => {});
         await request(app)
             .post('/api/execute')
+            .set(TOKEN)
             .send({ language_id: 63, source_code: 'x', roomId: 'r' })
             .expect(200);
     });
 });
 
 describe('GET /api/rooms/:id', () => {
+    test('403 without a valid room token', async () => {
+        roomAccess.isValid.mockReturnValue(false);
+        await request(app).get('/api/rooms/r1').expect(403);
+        expect(db.getRoom).not.toHaveBeenCalled();
+    });
+
     test('404 when the room does not exist', async () => {
-        await request(app).get('/api/rooms/nope').expect(404);
+        await request(app).get('/api/rooms/nope').set(TOKEN).expect(404);
     });
 
     test('returns the room row when it exists', async () => {
         db.getRoom.mockResolvedValue({ id: 'r1', language_id: 71, content: 'x' });
-        const res = await request(app).get('/api/rooms/r1').expect(200);
+        const res = await request(app)
+            .get('/api/rooms/r1')
+            .set(TOKEN)
+            .expect(200);
         expect(res.body).toMatchObject({ id: 'r1', language_id: 71 });
     });
 });
 
 describe('GET /api/rooms/:id/executions', () => {
+    test('403 without a valid room token', async () => {
+        roomAccess.isValid.mockReturnValue(false);
+        await request(app).get('/api/rooms/r1/executions').expect(403);
+    });
+
     test('returns the list from the DB', async () => {
         db.listExecutions.mockResolvedValue([{ id: '1', status: 'Accepted' }]);
-        const res = await request(app).get('/api/rooms/r1/executions').expect(200);
+        const res = await request(app)
+            .get('/api/rooms/r1/executions')
+            .set(TOKEN)
+            .expect(200);
         expect(res.body).toEqual([{ id: '1', status: 'Accepted' }]);
         expect(db.listExecutions).toHaveBeenCalledWith('r1', 20);
     });

@@ -283,3 +283,86 @@ footer a {
     border-bottom: 1px solid #2a2d3a;
     color: #b8b8c0;
 }
+
+/* --- lockable room / admit flow --- */
+
+.lockBadge {
+    font-size: 12px;
+    font-weight: normal;
+    color: #f0c674;
+    margin-left: 6px;
+}
+
+.hostControls {
+    margin-top: 16px;
+    border-top: 1px solid #424242;
+    padding-top: 12px;
+}
+
+.lockBtn {
+    width: 100%;
+    background: #eee;
+}
+
+.lobbyList {
+    margin-top: 12px;
+}
+.lobbyList h4 {
+    margin: 0 0 6px;
+    font-size: 13px;
+}
+.lobbyItem {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    padding: 4px 0;
+}
+.lobbyActions {
+    display: flex;
+    gap: 4px;
+}
+.lobbyActions button {
+    border: none;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 12px;
+    font-weight: bold;
+    cursor: pointer;
+}
+.lobbyActions button:first-child {
+    background: #4aed88;
+}
+.lobbyActions button:last-child {
+    background: #e06c75;
+    color: #fff;
+}
+
+.waitingOverlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: #1c1e29;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+}
+.waitingCard {
+    text-align: center;
+    max-width: 320px;
+    padding: 24px;
+}
+.waitingLogo {
+    height: 56px;
+    margin-bottom: 8px;
+}
+.waitingCard p {
+    color: #b8b8c0;
+    margin-bottom: 20px;
+}
+.waitingCard .leaveBtn {
+    margin: 0 auto;
+    width: 120px;
+}

@@ -2,8 +2,25 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const db = require('./db');
 const judge0 = require('./judge0');
+const roomAccess = require('./roomAccess');
 
 const router = express.Router();
+
+// A room's code and history are only readable/writable by someone who joined
+// it. The socket layer issues the token on entry (ROOM_ACCESS); the client
+// sends it back as X-Room-Token.
+function requireRoomAccess(req, res, next) {
+    const roomId = req.params.id || (req.body && req.body.roomId);
+    if (roomAccess.isValid(req.get('X-Room-Token'), roomId)) return next();
+    return res.status(403).json({ error: 'Join the room to access it.' });
+}
+
+// /api/execute allows anonymous (room-less) runs; only room-scoped runs need
+// the token.
+function requireRoomAccessIfScoped(req, res, next) {
+    if (!req.body || !req.body.roomId) return next();
+    return requireRoomAccess(req, res, next);
+}
 
 // Stop one client from looping the executor.
 const perIpExecuteLimiter = rateLimit({
@@ -31,7 +48,7 @@ const globalExecuteLimiter = rateLimit({
 
 // Proxy code execution through the server so the Judge0 key never reaches the
 // browser, and persist each run against its room.
-router.post('/execute', globalExecuteLimiter, perIpExecuteLimiter, async (req, res) => {
+router.post('/execute', globalExecuteLimiter, perIpExecuteLimiter, requireRoomAccessIfScoped, async (req, res) => {
     const { language_id, source_code, stdin = '', roomId } = req.body || {};
 
     if (!Number.isInteger(language_id) || typeof source_code !== 'string') {
@@ -61,7 +78,7 @@ router.post('/execute', globalExecuteLimiter, perIpExecuteLimiter, async (req, r
     res.json(result);
 });
 
-router.get('/rooms/:id', async (req, res) => {
+router.get('/rooms/:id', requireRoomAccess, async (req, res) => {
     try {
         const room = await db.getRoom(req.params.id);
         if (!room) return res.status(404).json({ error: 'Room not found.' });
@@ -72,7 +89,7 @@ router.get('/rooms/:id', async (req, res) => {
     }
 });
 
-router.get('/rooms/:id/executions', async (req, res) => {
+router.get('/rooms/:id/executions', requireRoomAccess, async (req, res) => {
     try {
         const rows = await db.listExecutions(req.params.id, 20);
         res.json(rows);
