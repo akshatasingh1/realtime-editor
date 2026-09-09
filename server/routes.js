@@ -1,12 +1,37 @@
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const db = require('./db');
 const judge0 = require('./judge0');
 
 const router = express.Router();
 
+// Stop one client from looping the executor.
+const perIpExecuteLimiter = rateLimit({
+    windowMs: 60 * 1000,
+    limit: Number(process.env.EXECUTE_RATE_PER_MIN) || 20,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: {
+        error: 'Too many runs from this address. Wait a minute and try again.',
+    },
+});
+
+// Backstop for the shared Judge0 quota - one abuser (or a bad day) shouldn't
+// be able to drain the whole daily allowance.
+const globalExecuteLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: Number(process.env.EXECUTE_RATE_GLOBAL_PER_HOUR) || 300,
+    standardHeaders: false,
+    legacyHeaders: false,
+    keyGenerator: () => 'global',
+    message: {
+        error: 'The code runner is busy right now. Try again shortly.',
+    },
+});
+
 // Proxy code execution through the server so the Judge0 key never reaches the
 // browser, and persist each run against its room.
-router.post('/execute', async (req, res) => {
+router.post('/execute', globalExecuteLimiter, perIpExecuteLimiter, async (req, res) => {
     const { language_id, source_code, stdin = '', roomId } = req.body || {};
 
     if (!Number.isInteger(language_id) || typeof source_code !== 'string') {

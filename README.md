@@ -74,6 +74,8 @@ cp .env.example .env                 # then fill in the values
 | `JUDGE0_API_HOST` | server | no | defaults to `judge0-ce.p.rapidapi.com` |
 | `JUDGE0_API_KEY` | server | for "Run Code" | RapidAPI key; **never** prefixed `REACT_APP_` |
 | `DATABASE_URL` | server | no | Neon **pooled** connection string (`...-pooler...?sslmode=require`). Unset = no persistence. |
+| `EXECUTE_RATE_PER_MIN` | server | no | Per-IP `/api/execute` limit (default 20). |
+| `EXECUTE_RATE_GLOBAL_PER_HOUR` | server | no | Global `/api/execute` limit, protects the Judge0 quota (default 300). |
 
 `.env` is git-ignored. Only `REACT_APP_*` variables reach the browser; everything
 else stays on the server.
@@ -94,7 +96,7 @@ server serves the build and the API from `:5000`).
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/api/execute` | Run code via Judge0. Body: `{ language_id, source_code, stdin?, roomId? }`. Persists the run when `roomId` is given. |
+| `POST` | `/api/execute` | Run code via Judge0. Body: `{ language_id, source_code, stdin?, roomId? }`. Persists the run when `roomId` is given. Rate-limited per-IP and globally. |
 | `GET` | `/api/rooms/:id` | Room row (`content`, `language_id`, timestamps). |
 | `GET` | `/api/rooms/:id/executions` | Last 20 runs for the room, newest first. |
 

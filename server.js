@@ -11,6 +11,11 @@ const apiRoutes = require('./server/routes');
 const { registerSocketHandlers } = require('./server/sockets');
 
 const app = express();
+
+// Render/Fly/Heroku sit behind one proxy; trust it so rate limiting sees the
+// real client IP (and not every request as coming from the proxy).
+app.set('trust proxy', 1);
+
 const server = http.createServer(app);
 
 // In production the server serves its own client (same origin). CORS matters
