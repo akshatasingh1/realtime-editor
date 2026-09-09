@@ -23,10 +23,11 @@ programming, interviews, and teaching.
                  ┌──────────┴──────────┐
                  │  Express server     │
                  │  server.js          │
-                 │   ├─ server/sockets │  live editing, presence, sync
-                 │   ├─ server/routes  │  POST /api/execute, room reads
-                 │   ├─ server/judge0  │  Judge0 proxy (API key stays here)
-                 │   └─ server/db      │  Postgres queries
+                 │   ├─ server/sockets     live editing, presence, lock/admit
+                 │   ├─ server/routes      /api/execute, room reads
+                 │   ├─ server/roomAccess  REST access tokens
+                 │   ├─ server/judge0      Judge0 proxy (API key stays here)
+                 │   └─ server/db          Postgres queries
                  └──────┬───────────┬──┘
                         │           │
               ┌─────────┴──┐   ┌────┴─────────┐
@@ -70,7 +71,7 @@ cp .env.example .env                 # then fill in the values
 
 | Variable | Scope | Required | Notes |
 |---|---|---|---|
-| `REACT_APP_BACKEND_URL` | client (build-time) | yes | e.g. `http://localhost:5000` |
+| `REACT_APP_BACKEND_URL` | client (build-time) | dev only | Points the client at the API/socket server, e.g. `http://localhost:5000`. Leave **unset** in production — the client then talks to its own origin, which is the server that served it. |
 | `JUDGE0_API_URL` | server | no | defaults to the RapidAPI CE endpoint |
 | `JUDGE0_API_HOST` | server | no | defaults to `judge0-ce.p.rapidapi.com` |
 | `JUDGE0_API_KEY` | server | for "Run Code" | RapidAPI key; **never** prefixed `REACT_APP_` |
@@ -100,6 +101,51 @@ CI=true npm test         # client lane (CRA / RTL)
 
 Nothing in the suite touches the network or a database. See
 [TESTING.md](TESTING.md) for what's covered and what's mocked.
+
+---
+
+## Deploy
+
+One service — the container builds the React client and runs the Express
+server, which serves both. Neon and Judge0 stay external. It's a single
+stateful process (in-memory presence, lock state, and access tokens), so run
+**one instance**.
+
+The [`Dockerfile`](Dockerfile) is a multi-stage build; the app listens on
+`$PORT` (default 5000).
+
+### Render (Docker)
+
+- New **Web Service** → Runtime **Docker**
+- Instance: 1 (do not enable autoscaling)
+- Environment variables: `JUDGE0_API_KEY`, `JUDGE0_API_HOST`, `JUDGE0_API_URL`,
+  `DATABASE_URL` (Neon **pooled** string). Leave `REACT_APP_BACKEND_URL` unset.
+- Health check path: `/`
+
+### Fly.io
+
+```bash
+fly launch --no-deploy          # detects the Dockerfile
+fly secrets set JUDGE0_API_KEY=... DATABASE_URL=...
+fly deploy
+```
+Set `min_machines_running = 1` and `max_machines_running = 1` in `fly.toml`.
+
+### Local container check
+
+```bash
+docker build -t realtime-editor .
+docker run -p 5000:5000 --env-file .env realtime-editor
+# open http://localhost:5000
+```
+
+### First deploy checklist
+
+- Rotate the Judge0 key and Neon password first — put the fresh values straight
+  into the platform's env vars, never back into local `.env`
+- After deploy: create a room → open the link in a second browser → live-edit →
+  lock the room → knock + admit → run code → refresh (persistence survives)
+- Put the live URL at the top of this README
 
 ---
 
