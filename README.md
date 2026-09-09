@@ -1,5 +1,8 @@
 # realtime-editor
 
+**Live:** https://codesync-realtime.onrender.com
+(free instance — the first request after it's been idle takes ~50s to wake)
+
 A collaborative code editor: share a room link, edit the same file together in
 real time, pick a language, and run the code from the browser. Built for pair
 programming, interviews, and teaching.
@@ -242,10 +245,3 @@ src/
 ```
 
 ---
-
-## Known limitations / TODO
-
-- CRA is unmaintained; migrating to Vite would remove the audit noise, speed up builds, and unblock router-component tests (see [TESTING.md](TESTING.md))
-- Full-document sync (see design notes) rather than CRDT
-- No accounts — access is by unguessable link + an optional host lock (see design notes); there's no persistent identity or invite list
-- Judge0 CE free tier is rate-limited; heavy use will see 429s
