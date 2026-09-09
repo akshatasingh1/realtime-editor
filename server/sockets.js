@@ -7,7 +7,7 @@ const SAVE_DEBOUNCE_MS = 2000;
 
 function registerSocketHandlers(io) {
     const userSocketMap = {};
-    const saveTimers = {}; // roomId -> pending setTimeout
+    const pendingSaves = {}; // roomId -> { code, timer }
 
     function getAllConnectedClients(roomId) {
         return Array.from(io.sockets.adapter.rooms.get(roomId) || []).map(
@@ -19,13 +19,32 @@ function registerSocketHandlers(io) {
     }
 
     function scheduleSave(roomId, code) {
-        clearTimeout(saveTimers[roomId]);
-        saveTimers[roomId] = setTimeout(() => {
-            delete saveTimers[roomId];
-            db.saveRoomContent(roomId, code).catch((err) =>
-                console.error('saveRoomContent failed:', err.message)
-            );
-        }, SAVE_DEBOUNCE_MS);
+        if (pendingSaves[roomId]) clearTimeout(pendingSaves[roomId].timer);
+        pendingSaves[roomId] = {
+            code,
+            timer: setTimeout(() => {
+                delete pendingSaves[roomId];
+                db.saveRoomContent(roomId, code).catch((err) =>
+                    console.error('saveRoomContent failed:', err.message)
+                );
+            }, SAVE_DEBOUNCE_MS),
+        };
+    }
+
+    // Write every debounced-but-not-yet-saved room immediately. Called on
+    // shutdown so a redeploy doesn't drop the last few seconds of edits.
+    async function flushPendingSaves() {
+        const entries = Object.entries(pendingSaves);
+        for (const [roomId, { timer }] of entries) {
+            clearTimeout(timer);
+            delete pendingSaves[roomId];
+        }
+        await Promise.allSettled(
+            entries.map(([roomId, { code }]) =>
+                db.saveRoomContent(roomId, code)
+            )
+        );
+        return entries.length;
     }
 
     io.on('connection', (socket) => {
@@ -114,6 +133,8 @@ function registerSocketHandlers(io) {
             delete userSocketMap[socket.id];
         });
     });
+
+    return { flushPendingSaves };
 }
 
 module.exports = { registerSocketHandlers };
