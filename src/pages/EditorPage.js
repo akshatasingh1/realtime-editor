@@ -12,6 +12,13 @@ import {
     useParams,
 } from 'react-router-dom';
 
+const LANGUAGES = [
+    { id: 54, name: 'C++ (GCC 9.2.0)' },
+    { id: 62, name: 'Java (OpenJDK 13.0.1)' },
+    { id: 63, name: 'JavaScript (Node.js 12.14.0)' },
+    { id: 71, name: 'Python (3.8.1)' },
+];
+
 const EditorPage = () => {
     const socketRef = useRef(null);
     const codeRef = useRef(null);
@@ -24,14 +31,7 @@ const EditorPage = () => {
     const [output, setOutput] = useState('');
     const [isRunning, setIsRunning] = useState(false);
     const [executions, setExecutions] = useState([]);
-
-    const [languageId, setLanguageId] = useState(63); // Default: JavaScript (Node.js)
-    const languages = [
-        { id: 54, name: 'C++ (GCC 9.2.0)' },
-        { id: 62, name: 'Java (OpenJDK 13.0.1)' },
-        { id: 63, name: 'JavaScript (Node.js 12.14.0)' },
-        { id: 71, name: 'Python (3.8.1)' },
-    ];
+    const [languageId, setLanguageId] = useState(63); // JavaScript (Node.js)
 
     useEffect(() => {
         // Guards against React 18 StrictMode double-invoking this effect.
@@ -39,9 +39,15 @@ const EditorPage = () => {
         // socket finishes connecting; without this flag the first (orphaned)
         // socket would still join the room, showing the user twice.
         let cancelled = false;
+        let hasConnected = false;
+
+        const myUsername = location.state?.username;
 
         const handleErrors = (e) => {
             console.log('socket error', e);
+            // Once we've connected, socket.io keeps retrying on its own -
+            // a transient failure shouldn't kick the user out of the room.
+            if (hasConnected) return;
             toast.error('Socket connection failed, try again later.');
             reactNavigator('/');
         };
@@ -62,20 +68,45 @@ const EditorPage = () => {
             conn.on('connect_error', handleErrors);
             conn.on('connect_failed', handleErrors);
 
-            conn.emit(ACTIONS.JOIN, {
-                roomId,
-                username: location.state?.username,
+            // Fires on the first connection *and* every reconnection, so a
+            // dropped network blip re-joins the room instead of silently
+            // leaving the user desynced until they refresh.
+            const emitJoin = () => {
+                conn.emit(ACTIONS.JOIN, { roomId, username: myUsername });
+            };
+            conn.on('connect', () => {
+                if (hasConnected) toast.success('Reconnected.');
+                hasConnected = true;
+                emitJoin();
+            });
+            if (conn.connected) {
+                hasConnected = true;
+                emitJoin();
+            }
+
+            conn.on('disconnect', (reason) => {
+                if (reason !== 'io client disconnect') {
+                    toast.error('Connection lost - reconnecting...');
+                }
             });
 
-            conn.on(ACTIONS.JOINED, ({ clients, username, socketId }) => {
-                if (username !== location.state?.username) {
+            conn.on(ACTIONS.JOINED, ({ clients, username }) => {
+                if (username !== myUsername) {
                     toast.success(`${username} joined the room.`);
                 }
                 setClients(clients);
+            });
+
+            // A newer client asked us for the live document.
+            conn.on(ACTIONS.SYNC_REQUEST, ({ socketId }) => {
                 conn.emit(ACTIONS.SYNC_CODE, {
-                    code: codeRef.current,
                     socketId,
+                    code: codeRef.current ?? '',
                 });
+            });
+
+            conn.on(ACTIONS.LANGUAGE_CHANGE, ({ languageId }) => {
+                if (Number.isInteger(languageId)) setLanguageId(languageId);
             });
 
             conn.on(ACTIONS.DISCONNECTED, ({ socketId, username }) => {
@@ -92,10 +123,14 @@ const EditorPage = () => {
             cancelled = true;
             const conn = socketRef.current;
             if (conn) {
+                conn.off('connect');
+                conn.off('disconnect');
                 conn.off('connect_error', handleErrors);
                 conn.off('connect_failed', handleErrors);
                 conn.off(ACTIONS.JOINED);
                 conn.off(ACTIONS.DISCONNECTED);
+                conn.off(ACTIONS.SYNC_REQUEST);
+                conn.off(ACTIONS.LANGUAGE_CHANGE);
                 conn.disconnect();
             }
             socketRef.current = null;
@@ -116,6 +151,14 @@ const EditorPage = () => {
             toast.error('Could not copy the Room ID');
             console.error(err);
         }
+    }
+
+    function changeLanguage(nextId) {
+        setLanguageId(nextId);
+        socketRef.current?.emit(ACTIONS.LANGUAGE_CHANGE, {
+            roomId,
+            languageId: nextId,
+        });
     }
 
     const handleRunClick = async () => {
@@ -172,9 +215,11 @@ const EditorPage = () => {
                         <select
                             id="language"
                             value={languageId}
-                            onChange={(e) => setLanguageId(Number(e.target.value))}
+                            onChange={(e) =>
+                                changeLanguage(Number(e.target.value))
+                            }
                         >
-                            {languages.map((lang) => (
+                            {LANGUAGES.map((lang) => (
                                 <option key={lang.id} value={lang.id}>
                                     {lang.name}
                                 </option>

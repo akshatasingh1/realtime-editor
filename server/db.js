@@ -69,6 +69,16 @@ async function saveRoomContent(id, content, languageId = null) {
     );
 }
 
+async function setRoomLanguage(id, languageId) {
+    if (!enabled) return;
+    await pool.query(
+        `UPDATE rooms
+            SET language_id = $2, last_active_at = now()
+          WHERE id = $1`,
+        [id, languageId]
+    );
+}
+
 // --- executions ----------------------------------------------------------
 
 async function recordExecution(roomId, languageId, result) {
@@ -108,6 +118,7 @@ module.exports = {
     getRoom,
     ensureRoom,
     saveRoomContent,
+    setRoomLanguage,
     recordExecution,
     listExecutions,
 };

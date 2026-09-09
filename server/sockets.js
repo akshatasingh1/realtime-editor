@@ -28,31 +28,23 @@ function registerSocketHandlers(io) {
         }, SAVE_DEBOUNCE_MS);
     }
 
-    // Best-effort: restore a room's persisted code to a single joiner. Never
-    // blocks the join handshake - if Postgres is slow or down, the room just
-    // starts empty and live peers still sync via SYNC_CODE.
-    async function restorePersistedCode(roomId, socketId) {
-        try {
-            const room = await db.ensureRoom(roomId);
-            if (room && room.content) {
-                io.to(socketId).emit(ACTIONS.CODE_CHANGE, { code: room.content });
-            }
-        } catch (err) {
-            console.error('room load on join failed:', err.message);
-        }
-    }
-
     io.on('connection', (socket) => {
         console.log('socket connected', socket.id);
 
-        socket.on(ACTIONS.JOIN, ({ roomId, username }) => {
+        socket.on(ACTIONS.JOIN, async ({ roomId, username }) => {
             if (typeof roomId !== 'string' || typeof username !== 'string') {
                 return;
             }
             userSocketMap[socket.id] = username;
+
+            // Peers already in the room *before* this socket joined. One of
+            // them holds the freshest document (including edits not yet
+            // debounce-saved), so it - not the DB - is the sync source when
+            // the room is already populated.
+            const peers = getAllConnectedClients(roomId);
             socket.join(roomId);
 
-            // Realtime handshake first - this path must not wait on the DB.
+            // Presence broadcast - never behind an await.
             const clients = getAllConnectedClients(roomId);
             clients.forEach(({ socketId }) => {
                 io.to(socketId).emit(ACTIONS.JOINED, {
@@ -62,10 +54,37 @@ function registerSocketHandlers(io) {
                 });
             });
 
-            // Then hand the joiner whatever was persisted. Covers the
-            // "everyone left" and "server restarted" cases that the
-            // client-to-client SYNC_CODE handshake alone cannot.
-            restorePersistedCode(roomId, socket.id);
+            // Code: ask exactly one peer for the live document. Falls through
+            // to the DB restore below only when this is the first client in.
+            if (peers.length > 0) {
+                io.to(peers[0].socketId).emit(ACTIONS.SYNC_REQUEST, {
+                    socketId: socket.id,
+                });
+            }
+
+            // Room row + persisted metadata (best-effort, may lag). Ordered
+            // after the realtime handshake so a slow/absent DB never blocks it.
+            try {
+                const room = await db.ensureRoom(roomId);
+                if (room) {
+                    if (peers.length === 0 && room.content) {
+                        io.to(socket.id).emit(ACTIONS.CODE_CHANGE, {
+                            code: room.content,
+                        });
+                    }
+                    io.to(socket.id).emit(ACTIONS.LANGUAGE_CHANGE, {
+                        languageId: room.language_id,
+                    });
+                }
+            } catch (err) {
+                console.error('room load on join failed:', err.message);
+            }
+        });
+
+        // A peer answering a SYNC_REQUEST: relay its document to the joiner.
+        socket.on(ACTIONS.SYNC_CODE, ({ socketId, code }) => {
+            if (typeof code !== 'string') return;
+            io.to(socketId).emit(ACTIONS.CODE_CHANGE, { code });
         });
 
         socket.on(ACTIONS.CODE_CHANGE, ({ roomId, code }) => {
@@ -74,8 +93,14 @@ function registerSocketHandlers(io) {
             scheduleSave(roomId, code);
         });
 
-        socket.on(ACTIONS.SYNC_CODE, ({ socketId, code }) => {
-            io.to(socketId).emit(ACTIONS.CODE_CHANGE, { code });
+        socket.on(ACTIONS.LANGUAGE_CHANGE, ({ roomId, languageId }) => {
+            if (typeof roomId !== 'string' || !Number.isInteger(languageId)) {
+                return;
+            }
+            socket.in(roomId).emit(ACTIONS.LANGUAGE_CHANGE, { languageId });
+            db.setRoomLanguage(roomId, languageId).catch((err) =>
+                console.error('setRoomLanguage failed:', err.message)
+            );
         });
 
         socket.on('disconnecting', () => {
